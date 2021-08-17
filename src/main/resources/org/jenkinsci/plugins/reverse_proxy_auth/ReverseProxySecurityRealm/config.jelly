@@ -32,7 +32,13 @@ THE SOFTWARE.
   <f:entry title="${%Header Groups Delimiter Name}">
     <f:textbox field="headerGroupsDelimiter" default="|" />
   </f:entry>
-  <f:advanced>  
+  <f:entry title="${%Authorization type:}" field="authorizationType">
+    <f:select/>
+  </f:entry>
+  <f:entry title="${%Cache Update Interval}" >
+    <f:textbox name="updateInterval" value="${instance.updateInterval}" default="15"/>
+  </f:entry>
+  <f:advanced title="LDAP authorization properties">
     <f:entry title="${%Custom Log In URL}" >
       <f:textbox name="customLogInUrl" value="${instance.customLogInUrl}" />
     </f:entry>
@@ -84,11 +90,24 @@ THE SOFTWARE.
     <f:entry field="disableMailAddressResolver">
         <f:checkbox name="disableLdapEmailResolver" checked="${instance.disableLdapEmailResolver}" title="${%Disable Ldap Email Resolver}"/>
     </f:entry>
-    <f:entry title="${%Cache Update Interval}" >
-      <f:textbox name="updateInterval" value="${instance.updateInterval}" default="15"/>
-    </f:entry>
+
   </f:advanced>
-  
+  <f:advanced title="Crowd authorization properties">
+    <f:entry title="Crowd authorization properties:"></f:entry>
+    <f:entry title="${%Crowd Server:}">
+      <f:textbox field="crowdUrl" />
+    </f:entry>
+    <f:entry title="${%Crowd application name}">
+      <f:textbox field="crowdApplicationName" />
+    </f:entry>
+    <f:entry title="${%Crowd application password}">
+      <f:password field="crowdApplicationPassword" />
+    </f:entry>
+    <f:validateButton
+            title="${%Test Crowd connection}" progress="${%Testing connection to Crowd...}"
+            method="testCrowdConnection" with="crowdUrl,crowdApplicationName,crowdApplicationPassword" />
+    <f:entry title="Common authorization properties:"></f:entry>
+  </f:advanced>
   <j:set var="uras" value="${app.unprotectedRootActions}"/>
   <j:if test="${uras != null}"> <!-- 1.495+ -->
     <f:entry title="${%Unprotected URLs}">

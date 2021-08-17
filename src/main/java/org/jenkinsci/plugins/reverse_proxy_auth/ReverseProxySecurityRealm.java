@@ -27,6 +27,9 @@ import static hudson.Util.fixEmpty;
 import static hudson.Util.fixEmptyAndTrim;
 import static hudson.Util.fixNull;
 
+import com.atlassian.crowd.exception.GroupNotFoundException;
+import com.atlassian.crowd.integration.rest.service.factory.RestCrowdClientFactory;
+import com.atlassian.crowd.service.client.CrowdClient;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import groovy.lang.Binding;
 import hudson.Extension;
@@ -36,6 +39,7 @@ import hudson.security.*;
 import hudson.tasks.Mailer;
 import hudson.tasks.Mailer.UserProperty;
 import hudson.util.FormValidation;
+import hudson.util.ListBoxModel;
 import hudson.util.Scrambler;
 import hudson.util.spring.BeanBuilder;
 
@@ -99,11 +103,14 @@ import org.jenkinsci.plugins.reverse_proxy_auth.data.GroupSearchTemplate;
 import org.jenkinsci.plugins.reverse_proxy_auth.data.SearchTemplate;
 import org.jenkinsci.plugins.reverse_proxy_auth.data.UserSearchTemplate;
 import org.jenkinsci.plugins.reverse_proxy_auth.model.ReverseProxyUserDetails;
+import org.jenkinsci.plugins.reverse_proxy_auth.service.ProxyCrowdAuthoritiesPopulator;
+import org.jenkinsci.plugins.reverse_proxy_auth.service.ProxyCrowdUserDetailsService;
 import org.jenkinsci.plugins.reverse_proxy_auth.service.ProxyLDAPAuthoritiesPopulator;
 import org.jenkinsci.plugins.reverse_proxy_auth.service.ProxyLDAPUserDetailsService;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.StaplerRequest;
+import org.kohsuke.stapler.StaplerResponse;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.web.context.WebApplicationContext;
@@ -126,6 +133,11 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 	public static String GROUP_SEARCH = System.getProperty(LDAPSecurityRealm.class.getName()+".groupSearch",
 			"(& (cn={0}) (| (objectclass=groupOfNames) (objectclass=groupOfUniqueNames) (objectclass=posixGroup)))");
 
+	private static final String CROWD_AUTHORIZATION_TYPE = "crowd";
+
+	private static final String LDAP_AUTHORIZATION_TYPE = "ldap";
+
+	private static final String HEADER_GROUPS_AUTHORIZATION_TYPE = "header";
 	/**
 	 * Interval to check user authorities via LDAP.
 	 */
@@ -276,10 +288,20 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 	public final String customLogInUrl;
 	public final String customLogOutUrl;
 
+	private boolean headerGroupsAuthorization = true;
+	private boolean crowdAuthorization = false;
+	private boolean ldapAuthorization = false;
+	private String crowdUrl;
+	private String crowdApplicationName;
+	private String crowdApplicationPassword;
+	private transient CrowdClient crowdClient;
+
+	private final String authorizationType;
+
 	@DataBoundConstructor
-	public ReverseProxySecurityRealm(String forwardedUser, String headerGroups, String headerGroupsDelimiter, String customLogInUrl, String customLogOutUrl, String server, String rootDN, boolean inhibitInferRootDN,
+	public ReverseProxySecurityRealm(String forwardedUser, String headerGroups, String headerGroupsDelimiter,String authorizationType, String customLogInUrl, String customLogOutUrl, String server, String rootDN, boolean inhibitInferRootDN,
 			String userSearchBase, String userSearch, String groupSearchBase, String groupSearchFilter, String groupMembershipFilter, String groupNameAttribute, String managerDN, String managerPassword, 
-			Integer updateInterval, boolean disableLdapEmailResolver, String displayNameLdapAttribute, String emailAddressLdapAttribute) {
+			Integer updateInterval, boolean disableLdapEmailResolver, String displayNameLdapAttribute, String emailAddressLdapAttribute,String crowdUrl, String crowdApplicationName, String crowdApplicationPassword) {
 
 		this.forwardedUser = fixEmptyAndTrim(forwardedUser);
 
@@ -289,6 +311,11 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 		} else {
 			this.headerGroupsDelimiter = "|";
 		}
+		// Check authorization type
+		this.authorizationType = authorizationType;
+		this.ldapAuthorization = LDAP_AUTHORIZATION_TYPE.equals(authorizationType);
+		this.crowdAuthorization = CROWD_AUTHORIZATION_TYPE.equals(authorizationType);
+		this.headerGroupsAuthorization = HEADER_GROUPS_AUTHORIZATION_TYPE.equals(authorizationType);
 
 		if(!StringUtils.isBlank(customLogInUrl)) {
 			this.customLogInUrl = customLogInUrl;
@@ -329,8 +356,21 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 		this.disableLdapEmailResolver = disableLdapEmailResolver;
 		this.displayNameLdapAttribute = displayNameLdapAttribute;
 		this.emailAddressLdapAttribute = emailAddressLdapAttribute;
+
+		if (crowdAuthorization){
+			this.crowdUrl = crowdUrl;
+			this.crowdApplicationName = crowdApplicationName;
+			this.crowdApplicationPassword = crowdApplicationPassword;
+			createCrowdClient();
+		}
 	}
 
+	public CrowdClient getCrowdClient() { return crowdClient; }
+
+	private void createCrowdClient(){
+		this.crowdClient = new RestCrowdClientFactory()
+				.newInstance(this.crowdUrl, this.crowdApplicationName, this.crowdApplicationPassword);
+	}
 	/**
 	 * Name of the HTTP header to look at.
 	 */
@@ -344,6 +384,10 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 
 	public String getHeaderGroupsDelimiter() {
 		return headerGroupsDelimiter;
+	}
+
+	public String getAuthorizationType() {
+		return authorizationType;
 	}
 
 	@CheckForNull
@@ -384,6 +428,30 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 	
 	public String getEmailAddressLdapAttribute() {
 		return emailAddressLdapAttribute;
+	}
+
+	public boolean isHeaderGroupsAuthorization() {
+		return headerGroupsAuthorization;
+	}
+
+	public boolean isCrowdAuthorization() {
+		return crowdAuthorization;
+	}
+
+	public  boolean isLdapAuthorization() {
+		return ldapAuthorization;
+	}
+
+	public String getCrowdUrl() {
+		return crowdUrl;
+	}
+
+	public String getCrowdApplicationName() {
+		return crowdApplicationName;
+	}
+
+	public String getCrowdApplicationPassword() {
+		return crowdApplicationPassword;
 	}
 	
 	/**
@@ -495,14 +563,14 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
                         authContext = new Hashtable<>();
                     }
 
-					if (getLDAPURL() != null) {
+					if (ldapAuthorization || crowdAuthorization) {
 
 						GrantedAuthority []  storedGrants = authContext.get(userFromHeader);
 						if (storedGrants != null && storedGrants.length > 1) {
 							authorities = retrieveAuthoritiesIfNecessary(userFromHeader, storedGrants);
 						} else {
 							try {
-								LdapUserDetails userDetails = (LdapUserDetails) loadUserByUsername(userFromHeader);
+								UserDetails userDetails = loadUserByUsername(userFromHeader);
 								authorities = userDetails.getAuthorities();
 
 								Set<GrantedAuthority> tempLocalAuthorities = new HashSet<GrantedAuthority>(Arrays.asList(authorities));
@@ -592,9 +660,12 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 		BeanBuilder builder = new BeanBuilder(Jenkins.getActiveInstance().pluginManager.uberClassLoader);
 
 		String fileName;
-		if (getLDAPURL() != null) {
+		if (ldapAuthorization) {
 			fileName = "ReverseProxyLDAPSecurityRealm.groovy";
-		} else {
+		} else if (crowdAuthorization){
+			createCrowdClient();
+			fileName = "ReverseProxyCrowdSecurityRealm.groovy";
+	    } else {
 			fileName = "ReverseProxySecurityRealm.groovy";
 		}
 
@@ -612,24 +683,29 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 		}
 		WebApplicationContext appContext = builder.createApplicationContext();
 
-		if (getLDAPURL() == null) {
-			proxyTemplate = new ReverseProxySearchTemplate();
+		if (crowdAuthorization) {
+			ProxyCrowdAuthoritiesPopulator authoritiesPopulator = findBean(ProxyCrowdAuthoritiesPopulator.class, appContext);
+			return new SecurityComponents(findBean(AuthenticationManager.class, appContext), new ProxyCrowdUserDetailsService(this, appContext));
 
-			return new SecurityComponents(findBean(AuthenticationManager.class, appContext), new ReverseProxyUserDetailsService(appContext));
-		} else {
+		} else if (ldapAuthorization) {
 			ldapTemplate = new LdapTemplate(findBean(InitialDirContextFactory.class, appContext));
 
 			if (groupMembershipFilter != null || groupNameAttribute != null) {
 				ProxyLDAPAuthoritiesPopulator authoritiesPopulator = findBean(ProxyLDAPAuthoritiesPopulator.class, appContext);
-		        if (groupMembershipFilter != null) {
-			        authoritiesPopulator.setGroupSearchFilter(groupMembershipFilter);
-		        }
-		        if (groupNameAttribute != null) {					
-		        	authoritiesPopulator.setGroupRoleAttribute(groupNameAttribute);
+				if (groupMembershipFilter != null) {
+					authoritiesPopulator.setGroupSearchFilter(groupMembershipFilter);
+				}
+				if (groupNameAttribute != null) {
+					authoritiesPopulator.setGroupRoleAttribute(groupNameAttribute);
 				}
 			}
 
 			return new SecurityComponents(findBean(AuthenticationManager.class, appContext), new ProxyLDAPUserDetailsService(this, appContext));
+
+		} else {
+			proxyTemplate = new ReverseProxySearchTemplate();
+
+			return new SecurityComponents(findBean(AuthenticationManager.class, appContext), new ReverseProxyUserDetailsService(appContext));
 		}
 	}
 
@@ -694,11 +770,22 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 
 		final Set<String> groups;
 
-		if (getLDAPURL() != null) {
+		if (ldapAuthorization) {
 			// TODO: obtain a DN instead so that we can obtain multiple attributes later
 			String searchBase = groupSearchBase != null ? groupSearchBase : "";
 			String searchFilter = groupSearchFilter != null ? groupSearchFilter : GROUP_SEARCH;
 			groups = ldapTemplate.searchForSingleAttributeValues(searchBase, searchFilter, new String[]{groupname}, "cn");
+		} else if (crowdAuthorization) {
+			groups = new HashSet<>();
+			try {
+				groups.add(crowdClient.getGroup(groupname).getName());
+			} catch (GroupNotFoundException g){
+				String msg = String.format("Ignoring %s, isn't a group", groupname);
+				LOGGER.log(Level.INFO, msg);
+			} catch (Exception e) {
+				String msg = String.format("Failed to search group name %s in Crowd", groupname);
+				LOGGER.log(Level.SEVERE, msg, e);
+			}
 		} else {
 			Authentication auth = SecurityContextHolder.getContext().getAuthentication();
 			GrantedAuthority[] authorities = authContext != null ? authContext.get(auth.getName()) : null;
@@ -789,6 +876,70 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 				return FormValidation.error(hudson.security.Messages.LDAPSecurityRealm_InvalidPortNumber());
 			}
 		}
+		public ListBoxModel doFillAuthorizationTypeItems(@QueryParameter String authorizationType) {
+			return new ListBoxModel(new ListBoxModel.Option("Header groups", HEADER_GROUPS_AUTHORIZATION_TYPE, HEADER_GROUPS_AUTHORIZATION_TYPE.equals(authorizationType)),
+					new ListBoxModel.Option("Crowd", "crowd", CROWD_AUTHORIZATION_TYPE.equals(authorizationType) ),
+					new ListBoxModel.Option("Ldap", "ldap", LDAP_AUTHORIZATION_TYPE.equals(authorizationType)));
+		}
+
+		public FormValidation doCheckAuthorizationType(
+				@QueryParameter final String authorizationType,
+				@QueryParameter final String crowdUrl,
+				@QueryParameter final String crowdApplicationName,
+				@QueryParameter final String crowdApplicationPassword,
+				@QueryParameter final String server) {
+			if (CROWD_AUTHORIZATION_TYPE.equals(authorizationType) && (StringUtils.isEmpty(crowdUrl) ||
+					StringUtils.isEmpty(crowdApplicationName) || StringUtils.isEmpty(crowdApplicationPassword))){
+				return FormValidation.error("Crowd authorization properties are mandatory");
+			} else if (LDAP_AUTHORIZATION_TYPE.equals(authorizationType) && StringUtils.isEmpty(server)){
+				return FormValidation.error("LDAP authorization properties are mandatory");
+			}
+			return FormValidation.ok();
+		}
+
+		public FormValidation doCheckCrowdUrl(
+				@QueryParameter final String crowdUrl,
+				@QueryParameter final String authorizationType) {
+			if (CROWD_AUTHORIZATION_TYPE.equals(authorizationType) && StringUtils.isEmpty(crowdUrl)){
+				return FormValidation.error("Crowd url is mandatory");
+			}
+			return FormValidation.ok();
+		}
+
+		public FormValidation doCheckCrowdApplicationName(
+				@QueryParameter final String crowdApplicationName,
+				@QueryParameter final String authorizationType) {
+			if (CROWD_AUTHORIZATION_TYPE.equals(authorizationType) && StringUtils.isEmpty(crowdApplicationName)){
+				return FormValidation.error("Crowd application name is mandatory");
+			}
+			return FormValidation.ok();
+		}
+
+		public FormValidation doCheckCrowdApplicationPassword(
+				@QueryParameter final String crowdApplicationPassword,
+				@QueryParameter final String authorizationType) {
+			if (CROWD_AUTHORIZATION_TYPE.equals(authorizationType) && StringUtils.isEmpty(crowdApplicationPassword)){
+				return FormValidation.error("Crowd application password is mandatory");
+			}
+			return FormValidation.ok();
+		}
+
+		public FormValidation doTestCrowdConnection(StaplerRequest req, StaplerResponse rsp,
+													@QueryParameter("crowdUrl") final String crowdUrl,
+													@QueryParameter("crowdApplicationName") final String crowdApplicationName,
+													@QueryParameter("crowdApplicationPassword") final String crowdApplicationPassword)
+				throws IOException, ServletException {
+
+			try {
+				CrowdClient crowdClient = new RestCrowdClientFactory().newInstance(
+						crowdUrl, crowdApplicationName, crowdApplicationPassword);
+				crowdClient.testConnection();
+				return FormValidation.ok("Success");
+			} catch (Exception e) {
+				String errorMsg = "Error connecting to Crowd: " + e.getMessage();
+				return FormValidation.error(errorMsg);
+			}
+		}
 	}
 
 	public static class ReverseProxyUserDetailsService implements UserDetailsService {
@@ -822,7 +973,7 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 		
 		GrantedAuthority[] authorities = storedGrants;
 		
-		if (getLDAPURL() != null) {
+		if (ldapAuthorization || crowdAuthorization) {
 			
 			long current = System.currentTimeMillis();
 			if (authorityUpdateCache != null && authorityUpdateCache.containsKey(userFromHeader)) {
@@ -834,7 +985,7 @@ public class ReverseProxySecurityRealm extends SecurityRealm {
 					
 					LOGGER.log(Level.INFO, "The check interval reached the threshold of " + check + "min, will now update the authorities");
 					
-					LdapUserDetails userDetails = (LdapUserDetails) loadUserByUsername(userFromHeader);
+					UserDetails userDetails = loadUserByUsername(userFromHeader);
 					authorities = userDetails.getAuthorities();
 
 					Set<GrantedAuthority> tempLocalAuthorities = new HashSet<GrantedAuthority>(Arrays.asList(authorities));
