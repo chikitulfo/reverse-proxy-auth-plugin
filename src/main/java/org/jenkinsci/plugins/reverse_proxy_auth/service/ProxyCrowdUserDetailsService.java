@@ -17,8 +17,12 @@ public class ProxyCrowdUserDetailsService implements UserDetailsService {
 
     private ReverseProxyAuthoritiesPopulator authoritiesPopulator;
 
-    public ProxyCrowdUserDetailsService(ReverseProxySecurityRealm securityRealm, WebApplicationContext appContext) {
-        this.authoritiesPopulator = securityRealm.extractBean(ProxyCrowdAuthoritiesPopulator.class, appContext);
+//    public ProxyCrowdUserDetailsService(ReverseProxySecurityRealm securityRealm, WebApplicationContext appContext) {
+//        this.authoritiesPopulator = securityRealm.extractBean(ProxyCrowdAuthoritiesPopulator.class, appContext);
+//    }
+
+    public ProxyCrowdUserDetailsService(ProxyCrowdAuthoritiesPopulator authoritiesPopulator) {
+        this.authoritiesPopulator = authoritiesPopulator;
     }
 
 
